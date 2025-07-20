@@ -1,0 +1,101 @@
+name: Update Journal Summaries
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'journal/**'
+      - 'claude notes/**'
+      - '.github/workflows/update_journal_summaries.yml'
+      - 'claude.md'
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: write  # Need write permission to commit changes
+
+jobs:
+  update-summaries:
+    runs-on: ubuntu-latest
+    environment: Sendmail  # Uses same environment as email workflows for CLAUDE_API_KEY
+    
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Install Claude CLI and Dependencies
+      run: |
+        # Install Node.js if not available
+        curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+        sudo apt-get install -y nodejs
+        
+        # Install Python and PDF library for processing PDFs
+        sudo apt-get install -y python3-pip
+        pip3 install pdfplumber
+        
+        # Install Claude Code CLI globally
+        npm install -g @anthropic-ai/claude-code
+    
+    - name: Check API Key
+      run: |
+        if [ -z "${{ secrets.CLAUDE_API_KEY }}" ]; then
+          echo "ERROR: CLAUDE_API_KEY secret is not set or is empty"
+          echo "Please add CLAUDE_API_KEY to your repository secrets"
+          exit 1
+        else
+          echo "API key is set (length: ${#ANTHROPIC_API_KEY})"
+        fi
+      env:
+        ANTHROPIC_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+    
+    - name: Set restrictive Claude config for automation
+      run: |
+        mkdir -p .claude
+        cat > .claude/settings.json << 'EOF'
+        {
+          "allowedTools": [
+            "Read", "Edit", "MultiEdit", "Write", 
+            "Glob", "Grep", "LS", "Task"
+          ]
+        }
+        EOF
+    
+    - name: Update Journal Summaries
+      timeout-minutes: 20
+      env:
+        ANTHROPIC_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+      run: |
+        cd "${{ github.workspace }}"
+        
+        # Debug: Check if API key is available
+        if [ -z "$ANTHROPIC_API_KEY" ]; then
+          echo "ERROR: ANTHROPIC_API_KEY is not available in environment"
+          exit 1
+        fi
+        
+        # Run Claude to update summaries
+        claude \
+          --dangerously-skip-permissions \
+          -p \
+          --output-format text \
+          "Please check for any files in the journal folder that you can read (including PDF) have been modified or created since the last summary update. Also check the 'claude notes' folder for any new notes that might provide additional context. For PDF files, use Python with pdfplumber to extract text and create markdown summaries. Create individual .md summaries for any new files in journal/ and update the relevant temporal and thematic summaries as needed based on files from both sources. Use the data directory and any relevant existing summaries as additional context. Follow the guidelines in claude.md. If the summaries have been updated at least as recently as the most recent item in journal/ or the most recent item in claude notes/, make no changes and exit. IMPORTANT: The summaries directory is named 'claude summaries' (with a space, not an underscore). All summary files should be written to the './claude summaries/' directory. Be thorough but efficient - update only what has changed." \
+          .
+    
+    - name: Check for changes
+      id: check_changes
+      run: |
+        if [[ -n $(git status --porcelain) ]]; then
+          echo "changes=true" >> $GITHUB_OUTPUT
+        else
+          echo "changes=false" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Commit and push changes
+      if: steps.check_changes.outputs.changes == 'true'
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add "claude summaries/**/*.md" "claude notes/**/*.md"
+        git commit -m "Auto-update journal summaries based on recent changes"
+        git pull --rebase
+        git push

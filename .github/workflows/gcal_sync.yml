@@ -1,0 +1,84 @@
+name: Sync Google Calendar
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'code/gcal_sync.py'
+      - '.github/workflows/gcal_sync.yml'
+  schedule:
+    # Run daily at 2:30 AM PST (9:30 AM UTC) - 30 min before daily email
+    - cron: '30 9 * * *'
+  workflow_dispatch:  # Allow manual triggering
+
+permissions:
+  contents: write
+
+jobs:
+  sync-calendar:
+    runs-on: ubuntu-latest
+    environment: Sendmail
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
+        
+    - name: Set up credentials
+      env:
+        GOOGLE_CALENDAR_CREDENTIALS: ${{ secrets.GOOGLE_CALENDAR_CREDENTIALS }}
+        GCAL_TOKEN_DATA: ${{ secrets.GCAL_TOKEN_DATA }}
+      run: |
+        cd code
+        # Create credentials file from secret
+        echo "$GOOGLE_CALENDAR_CREDENTIALS" > credentials.json
+        
+        # Create token file if token data exists
+        if [ ! -z "$GCAL_TOKEN_DATA" ]; then
+          echo "$GCAL_TOKEN_DATA" | base64 -d > gcal_token.pickle
+        fi
+    
+    - name: Sync calendar data
+      run: |
+        cd code
+        # Update the calendar list below to match your calendars
+        python gcal_sync.py --output ../data --days-before 3 --days-ahead 7 --calendars "Primary"
+    
+    - name: Clean up credentials
+      if: always()
+      run: |
+        cd code
+        rm -f credentials.json
+        # Update token in secret if changed
+        if [ -f gcal_token.pickle ]; then
+          NEW_TOKEN=$(base64 -w 0 gcal_token.pickle)
+          echo "gcal_token_updated=true" >> $GITHUB_ENV
+          echo "::add-mask::$NEW_TOKEN"
+          rm -f gcal_token.pickle
+        fi
+    
+    - name: Commit and push changes
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        
+        # Add calendar file
+        git add data/calendar.md || true
+        
+        # Check if there are changes
+        if ! git diff --staged --quiet; then
+          git commit -m "Update calendar data [skip ci]"
+          git pull --rebase
+          git push
+        else
+          echo "No changes to commit"
+        fi

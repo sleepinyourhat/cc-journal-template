@@ -1,0 +1,60 @@
+name: Daily Email
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'code/daily_email.py'
+  schedule:
+    # Runs every day at 3 AM Pacific Time (10 AM UTC)
+    - cron: '0 10 * * *'
+  workflow_dispatch:  # Allows manual triggering
+
+permissions:
+  contents: write
+
+jobs:
+  send-email:
+    runs-on: ubuntu-latest
+    environment: Sendmail
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: pip install requests pandas markdown
+      
+    - name: Run email script
+      env:
+        EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+        EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+      run: |
+        cd code
+        python daily_email.py
+      
+    - name: Commit and push changes
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        if [ -f "meditation advice/latest_daily_update.md" ]; then
+          git add "meditation advice/latest_daily_update.md"
+          if ! git diff --staged --quiet; then
+            git commit -m "Update daily advice [skip ci]"
+            # Pull with strategy to always keep our version on conflicts
+            git pull --strategy-option=ours origin main
+            git push
+          else
+            echo "No changes to commit"
+          fi
+        else
+          echo "No daily advice file found to commit"
+        fi
